@@ -3,16 +3,18 @@ package com.difrancescogianmarco.arcore_flutter_plugin
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.View
 import android.widget.Toast
-import androidx.annotation.NonNull
-import androidx.annotation.Nullable
 import com.difrancescogianmarco.arcore_flutter_plugin.flutter_models.FlutterArCoreHitTestResult
 import com.difrancescogianmarco.arcore_flutter_plugin.flutter_models.FlutterArCoreNode
 import com.difrancescogianmarco.arcore_flutter_plugin.flutter_models.FlutterArCorePose
@@ -26,11 +28,14 @@ import com.google.ar.sceneform.*
 import com.google.ar.sceneform.rendering.ModelRenderable
 import com.google.ar.sceneform.rendering.Texture
 import com.google.ar.sceneform.ux.AugmentedFaceNode
-import io.flutter.app.FlutterApplication
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+
 
 class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMessenger, id: Int, private val isAugmentedFaces: Boolean, private val debug: Boolean) : PlatformView, MethodChannel.MethodCallHandler {
     private val methodChannel: MethodChannel = MethodChannel(messenger, "arcore_flutter_plugin_$id")
@@ -164,6 +169,15 @@ class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMess
             "init" -> {
                 arScenViewInit(call, result, activity)
             }
+            "getCameraPose" -> {
+                getCameraPose(call, result)
+            }
+            "getViewMatrix" -> {
+                getViewMatrix(call, result)
+            }
+            "getProjectionMatrix" -> {
+                getProjectionMatrix(call, result)
+            }
             "addArCoreNode" -> {
                 debugLog(" addArCoreNode")
                 val map = call.arguments as HashMap<String, Any>
@@ -193,6 +207,11 @@ class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMess
             "updateMaterials" -> {
                 debugLog(" updateMaterials")
                 updateMaterials(call, result)
+
+            }
+            "takeScreenshot" -> {
+                debugLog(" takeScreenshot")
+                takeScreenshot(call, result)
 
             }
             "loadMesh" -> {
@@ -245,7 +264,7 @@ class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMess
 
     private fun setupLifeCycle(context: Context) {
         activityLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
-            override fun onActivityCreated(@NonNull activity: Activity, @Nullable savedInstanceState: Bundle?) {
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                 debugLog("onActivityCreated")
 //                maybeEnableArButton()
             }
@@ -303,6 +322,59 @@ class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMess
                 methodChannel.invokeMethod("onPlaneTap", list)
             }
         }
+    }
+
+    private fun takeScreenshot(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            // create bitmap screen capture
+
+            // Create a bitmap the size of the scene view.
+            val bitmap: Bitmap = Bitmap.createBitmap(arSceneView!!.getWidth(), arSceneView!!.getHeight(),
+                    Bitmap.Config.ARGB_8888)
+
+            // Create a handler thread to offload the processing of the image.
+            val handlerThread = HandlerThread("PixelCopier")
+            handlerThread.start()
+            // Make the request to copy.
+            // Make the request to copy.
+            PixelCopy.request(arSceneView!!, bitmap, { copyResult ->
+                if (copyResult === PixelCopy.SUCCESS) {
+                    try {
+                        saveBitmapToDisk(bitmap)
+                    } catch (e: IOException) {
+                        e.printStackTrace();
+                    }
+                }
+                handlerThread.quitSafely()
+            }, Handler(handlerThread.getLooper()))
+
+        } catch (e: Throwable) {
+            // Several error may come out with file handling or DOM
+            e.printStackTrace()
+        }
+        result.success(null)
+    }
+
+    @Throws(IOException::class)
+    fun saveBitmapToDisk(bitmap: Bitmap):String {
+
+//        val now = LocalDateTime.now()
+//        now.format(DateTimeFormatter.ofPattern("M/d/y H:m:ss"))
+        val now = "rawScreenshot"
+        // android/data/com.hswo.mvc_2021.hswo_mvc_2021_flutter_ar/files/
+        // activity.applicationContext.getFilesDir().toString() //doesnt work!!
+        // Environment.getExternalStorageDirectory()
+        val mPath: String =  Environment.getExternalStorageDirectory().toString() + "/DCIM/" + now + ".jpg"
+        val mediaFile = File(mPath)
+        debugLog(mediaFile.toString())
+        //Log.i("path","fileoutputstream opened")
+        //Log.i("path",mPath)
+        val fileOutputStream = FileOutputStream(mediaFile)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, fileOutputStream)
+        fileOutputStream.flush()
+        fileOutputStream.close()
+//        Log.i("path","fileoutputstream closed")
+        return mPath as String
     }
 
     private fun arScenViewInit(call: MethodCall, result: MethodChannel.Result, context: Context) {
@@ -558,6 +630,33 @@ class ArCoreView(val activity: Activity, context: Context, messenger: BinaryMess
         }
 
     }*/
+    private fun getCameraPose(cal: MethodCall, result: MethodChannel.Result) {
+        val cameraPose = arSceneView?.arFrame?.camera?.getDisplayOrientedPose()
+        val cameraPoseTranslation = cameraPose?.getTranslation() as FloatArray
+        val cameraPoseRotation = cameraPose?.getRotationQuaternion() as FloatArray
+        val cameraPoseMap = FlutterArCorePose(cameraPoseTranslation,cameraPoseRotation).toHashMap()
+        result.success(cameraPoseMap)
+    }
+
+    private fun getViewMatrix(cal: MethodCall, result: MethodChannel.Result) {
+        val camera = arSceneView?.arFrame?.camera
+        val viewMatrix = FloatArray(16)
+        camera?.getViewMatrix(viewMatrix, 0)
+
+        val map: HashMap<String, Any> = HashMap()
+        map["viewMatrix"] = viewMatrix;
+        result.success(map)
+    }
+
+    private fun getProjectionMatrix(cal: MethodCall, result: MethodChannel.Result) {
+        val camera = arSceneView?.arFrame?.camera
+        val projectionMatrix = FloatArray(16)
+        camera?.getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f)
+
+        val map: HashMap<String, Any> = HashMap()
+        map["projectionMatrix"] = projectionMatrix;
+        result.success(map)
+    }
 
     /*    fun updatePosition(call: MethodCall, result: MethodChannel.Result) {
         val name = call.argument<String>("name")
